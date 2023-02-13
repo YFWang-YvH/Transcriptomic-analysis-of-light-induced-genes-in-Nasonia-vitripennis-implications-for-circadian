@@ -1,0 +1,264 @@
+### Preprocessing RNAseq data
+
+### Step 1 quality check and trimming raw data
+
+## A. raw QC:
+# fastqc to check raw RNAseq data
+fastqc -o ./rawdata/fastqc -t 12 ./rawdata/*.gz 
+ 
+# fastq_screen to check for contamination
+./FastQ-Screen-0.14.1/fastq_screen --threads 12 --conf ./FastQ-Screen-0.14.1/FastQ_Screen_Genomes/fastq_screen.conf --outdir ./rawdata/fastq_screen ./rawdata/*.gz
+
+# multiqc to check all samples together
+multiqc -d -n QC_raw --interactive -o ./rawdata ./rawdata/fastqc
+
+# trim low quality sequence reads using Trimmomatic
+for infile in *_1.fq.gz
+> do
+>   base=$(basename ${infile} _1.fq.gz)
+>   java -jar $EBROOTTRIMMOMATIC/trimmomatic-0.39.jar PE -threads 4 ${infile} ${base}_2.fq.gz \
+>                trimmeddata/${base}_1.trim.fq.gz trimmeddata/${base}_1un.trim.fq.gz \
+>                trimmeddata/${base}_2.trim.fq.gz trimmeddata/${base}_2un.trim.fq.gz \
+>                ILLUMINACLIP:TruSeq3-pe-2.FA:2:30:10:2:keepBothReads LEADING:£0 TRAILING:30
+> done
+
+## B. clean qc:
+# fastqc to check trimmed RNAseq data
+fastqc -o ./trimmeddata/fastqc -t 12 ./trimmeddata/*.gz 
+ 
+# fastq_screen to check for contamination
+./FastQ-Screen-0.14.1/fastq_screen --threads 12 --conf ./FastQ-Screen-0.14.1/FastQ_Screen_Genomes/fastq_screen.conf --outdir ./trimmeddata/fastq_screen ./trimmeddata/*.gz
+
+# multiqc to check all samples together
+multiqc -d -n QC_trimmed --interactive -o ./trimmeddata ./trimmeddata/fastqc
+
+### Step 2 genome mapping with HISAT2
+
+## A. Genome mapping
+
+#Download nasonia ref genome the newest 20200130 assembly genome file .fsa and annotation file .gff
+zcat GCF_009193385.2_Nvit_psr_1.1_genomic.gff.gz > ./Reference/GCF_009193385.2_Nvit_psr_1.1_genomic.gff
+
+#unzip tar.gz file of the assembly genome
+tar xvzf genome_assemblies_genome_fasta.tar.gz
+
+#turn fasta.gz into fasta
+zcat GCF_009193385.2_Nvit_psr_1.1_genomic.fna.gz > GCF_009193385.2_Nvit_psr_1.1_genomic.fa
+
+#use agat to transfer .gff file to .gtf file
+agat_convert_sp_gff2gtf.pl --gff GCF_009193385.2_Nvit_psr_1.1_genomic.gff -o GCF_009193385.2_Nvit_psr_1.1_genomic.gtf
+
+#use histat2 to extract splice sites and exons information
+hisat2_extract_splice_sites.py GCF_009193385.2_Nvit_psr_1.1_genomic.gtf > GCF_009193385.2_Nvit_psr_1.1_genomic.ss
+hisat2_extract_exons.py GCF_009193385.2_Nvit_psr_1.1_genomic.gtf > GCF_009193385.2_Nvit_psr_1.1_genomic.exon
+
+#hisat2 build index
+hisat2-build -p 7 --ss nasonia_genome.ss --exon nasonia_genome.exon nasonia_genome.fa hisat2_index_nv/nasonia_tran
+
+#hisat alignment
+
+for infile in ./trimmeddata/*_1.trim.fq.gz
+> do
+> base=$(basename ${infile} _1.trim.fq.gz)
+> hisat2 -p 7 --dta -x ./Reference/hisat2_index_nv/nasonia_tran -1 ./trimmeddata/${base}_1.trim.fq.gz -2 ./trimmeddata/${base}_2.trim.fq.gz -S ./samfile/${base}.sam -t
+> done
+
+#transfer aligned SAM to BAM with samtools
+samtools view -b -@ 7 ./samfile/*.sam > ./bamfile/*.bam
+
+#sort the BAM file
+samtools sort -@ 7 ./bamfile/*.bam > ./bamfile/*.sorted.bam
+
+#index the sorted BAM file
+samtools index ./bamfile/*.sorted.bam
+
+## B. mapping QC
+
+#flagstat
+for file in *.sorted.bam
+do
+base=$(basename ${file})
+echo ${base} >> ./MappingQC/flagstat.txt
+samtools flagstat ${base} >> ./MappingQC/flagstat.txt
+done
+##still should separate flagstat file for multiqc to recognise later
+
+#makeduplicates with picard
+for infile in *.sorted.bam
+do
+base=$(basename ${infile} .sorted.bam)
+java -jar $EBROOTPICARD/picard.jar MarkDuplicates \
+INPUT=${infile} \
+OUTPUT=./MappingQC/MarkDuplicates/${base}.mkdup.bam \
+METRICS_FILE=./MappingQC/MarkDuplicates/${base}.mkdup_metrics.txt \
+CREATE_INDEX=true \
+TAGGING_POLICY=OpticalOnly 
+done
+
+#CollectAlignment Summary Metrics
+for infile in *.sorted.bam
+do
+base=$(basename ${infile} .sorted.bam)
+java -jar $EBROOTPICARD/picard.jar CollectAlignmentSummaryMetrics \
+INPUT=${infile} \
+OUTPUT=./MappingQC/CollectAlignment/${base}.aligment_metrics.txt \
+REFERENCE_SEQUENCE=./Reference/nasonia_genome.fa
+done
+
+#CollectRnaSeqMetrics
+#for collect rnaseq metrics, we need reference file in ref_flat file type, using gtfToGenePred
+gtfToGenePred -genePredExt ./Reference/nasonia_genome.gtf ./Reference/nasonia_genome.txt
+
+#move column 12 to position 1 and picard should take it
+#get number of columns
+awk '{ print NF; exit}' ./Reference/nasonia_genome.txt
+#reorder columns, make sure to convert space to tabs (awk doesnt take tabs as input)
+awk '{ print $12 " " $1 " " $2 " " $3 " " $4 " " $5 " " $6 " " $7 " " $8 " " $9 " " $10}' ./Reference/nasonia_genome.txt | tr [:blank:] \\t > ./Reference/nasonia_genome_arr.txt
+
+for infile in *.sorted.bam
+do
+base=$(basename ${infile} .sorted.bam)
+java -jar $EBROOTPICARD/picard.jar CollectRnaSeqMetrics \
+INPUT=${infile} \
+REF_FLAT=./Reference/nasonia_genome_arr.txt \
+OUTPUT=./MappingQC/CollectRnaSeq/${base}.RNA_metrics.txt \
+STRAND=NONE
+done
+
+#get multiqc report
+multiqc -d -n QC_mapping --interactive -o ./MappingQC/multiqc ./MappingQC
+
+## C. Filter out any optical duplicates before doing assemby and quantification
+
+for infile in *.mkdup.bam
+do
+base=$(basename ${infile} .mkdup.bam)
+samtools view -h ${infile} | grep -v 'DT:Z:SQ' | samtools view -b -o ${base}.sorted.filt.bam
+done
+
+samtools view -h *.mkdup.bam | grep -v 'DT:Z:SQ' | samtools view -b -o ./filtedbam/*.sorted.filt.bam
+
+## D. Mapping QC of filtered data
+
+#flagstat
+for file in *.sorted.filt.bam
+do
+base=$(basename ${file} .sorted.filt.bam)
+cat ../flagstat2/${base}.txt
+echo ${base} >> ../flagstat2/${base}.txt
+samtools flagstat ${base} >> ../flagstat2/${base}.txt
+done
+
+#CollectAlignment Summary Metrics
+for infile in *.sorted.filt.bam
+do
+base=$(basename ${infile} .sorted.filt.bam)
+java -jar $EBROOTPICARD/picard.jar CollectAlignmentSummaryMetrics \
+INPUT=${infile} \
+OUTPUT=../CollectAlignment2/${base}.aligment_metrics.txt \
+REFERENCE_SEQUENCE=./Reference/nasonia_genome.fa
+done
+
+#CollectRnaSeqMetrics
+for infile in *.sorted.filt.bam
+do
+base=$(basename ${infile} .sorted.filt.bam)
+java -jar $EBROOTPICARD/picard.jar CollectRnaSeqMetrics \
+INPUT=${infile} \
+REF_FLAT=./Reference/nasonia_genome_arr.txt \
+OUTPUT=../CollectRnaSeq2/${base}.RNA_metrics.txt \
+STRAND=NONE
+done
+
+#get multiqc report
+multiqc -d -n QC_mapping_filtered --interactive -o ./MappingQC/multiqc_filtered ./MappingQC
+
+### Step 3 Assembly with stringtie
+
+## A. assemble and quantify expressed genes and transcripts assemble transcripts for each sample
+
+for infile in *.sorted.filt.bam
+do
+base=$(basename ${infile} .sorted.filt.bam)
+stringtie ${infile} \
+-o ./stringtie/${base}.gtf \
+-p 8 \
+-l ${base} \#
+-G ./Reference/nasonia_genome.gtf \
+-v 
+done
+
+## B. merge transcripts from all samples 
+#Here mergelist.txt is a text file that has the names of the GTF files created in the previous step, with each file name on a single line 
+stringtie --merge -p 8 -G ./Reference/nasonia_genome.gtf -o stringtie_merged.gtf mergelist.txt
+
+## C. examine how the transcripts compare to the reference annotation (optional) using gffcompare
+gffcompare -r ./Reference/nasonia_genome.gtf -G -o merged stringtie_merged.gtf -V
+
+## D. exclude novel transcripts without homologs
+
+#download database for blasting 
+wget 'ftp://ftp.ncbi.nlm.nih.gov/blast/db/nr.*.tar.gz'
+#Complete UniProtKB/Swiss-Prot data set in FASTA format
+wget ftp://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
+#uniprot Complete UniProtKB/TrEMBL data set in FASTA format 
+wget ftp://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_trembl.fasta.gz
+
+diamond makedb --in nr.gz -d nr
+diamond makedb --in uniprot_sprot.fasta.gz -d uniprot_sprot
+gunzip uniprot_trembl.fasta.gz
+diamond makedb --threads 12 --in uniprot_trembl.fasta.gz -d uniprot_trembl
+
+#get fasta file from stringtie
+#mapped to existing genes have sequence < LOC > in .gtf or < gene- > in .gtf
+grep -v 'LOC\|gene-' ./stringtie/stringtie_merged.gtf > ./stringtie/results/novel_sites.stringtie.gtf
+
+grep -Eo 'transcript_id "MSTRG.[0-9]+.[0-9]+"' ./stringtie/results/novel_sites.stringtie.gtf | uniq > ./stringtie/results/novel_sites_queries_all.txt
+wc ./stringtie/results/novel_sites_queries_all.txt #24729 49458 726573 results
+
+grep -c 'transcript.*transcript_id "MSTRG' ./stringtie/results/novel_sites.stringtie.gtf #24729
+grep -c 'transcript.*transcript_id "MSTRG' ./stringtie/stringtie_merged.gtf #24729
+
+#translate gtf file to fasta file using gffread
+gffread -w ./stringtie/results/novel_sites.stringtie.fa -g ./Reference/nasonia_genome.fa ./stringtie/results/novel_sites.stringtie.gtf
+gffread -w ./stringtie/results/novel_sites_allhits.stringtie.fa -g ./Reference/nasonia_genome.fa ./stringtie/results/novel_sites_allhits.stringtie.gtf
+gffread -w ./stringtie/results/novel_sites_nohits.stringtie.fa -g ./Reference/nasonia_genome.fa ./stringtie/results/novel_sites_nohits.stringtie.gtf
+
+#do diamond blastx search, get xml output 
+diamond blastx --tmpdir /dev/shm -q ./stringtie/results/novel_sites.stringtie.fa -d ./NCBInrdatabase/nr.dmnd -p 8 -f 5 -o ./stringtie/results/novel_sites.blast.xml
+diamond blastx --tmpdir /dev/shm -q ./stringtie/results/novel_sites.stringtie.fa -d ./NCBInrdatabase/nr.dmnd -p 8 -f 6 -o ./stringtie/results/novel_sites.blast.txt
+
+#grep all queries without blast hists
+grep '</Iteration_hits>' -B 3 novel_sites.blast.xml | grep -o 'MSTRG.*<' | rev | cut -c 2- | rev > novel_sites_queries_nohits.txt #grep everything that has no hits 813line, all txt has 24729 lines
+
+#grepeverything that didnt have a hit and exclude from stringtie_merged.gtf
+grep -vf ./stringtie/results/novel_sites_queries_nohits.txt ./stringtie/stringtie_merged.gtf > ./stringtie/results/novel_sites_allhits.stringtie.gtf
+grep -vf ./stringtie/results/novel_sites_queries_nohits.txt ./stringtie/merged.annotated.gtf > ./stringtie/results/novel_sites_allhits_annotated.stringtie.gtf
+grep -f ./stringtie/results/novel_sites_queries_nohits.txt ./stringtie/stringtie_merged.gtf > ./stringtie/results/novel_sites_nohits.stringtie.gtf
+
+#check the output of grep
+wc ./stringtie/results/novel_sites_nohits.stringtie.gtf #2838 38066 342689
+wc stringtie_merged.gtf #637873 10253800 100052781
+wc results/novel_sites_allhits.stringtie.gtf #635035 10215734 99710092
+grep -c 'MSTRG.150.1' novel_sites_allhits.stringtie.gtf #to check if the excluding was successful
+
+## E. estimate transcript abundances and create table counts for DEseq2
+
+
+for infile in *.sorted.bam
+do
+base=$(basename ${infile} .sorted.bam)
+stringtie ${infile} \
+-e \
+-o ./stringtie/${base}.gtf \
+-p 8 \
+-l ${base} \#
+-A ${base} \
+-G ./stringtie/results/novel_sites_allhits.stringtie.gtf \
+-v 
+done
+
+#create a text file listing sample IDs and their respective paths (sample_lst.txt)
+#produce two csv files-1.generate count matrices using prepDE.py
+prepDE.py -i sample_lst.txt -v 
+
