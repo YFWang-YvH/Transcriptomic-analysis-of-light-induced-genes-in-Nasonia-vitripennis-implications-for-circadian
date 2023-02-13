@@ -1,0 +1,64 @@
+### Functional annotation for RNAseq data
+
+### Step 1 do diamond blast search on novel_sites_allhits.stringtie.fa from Preprocessing RNAseq data
+
+## do diamond blast search, outout format as tabular output
+
+## A. Swissprot
+diamond blastx -q results/novel_sites_allhits.stringtie.fa -d ./NCBInrdatabase/uniprot_sprot.dmnd -b 12 -c 1 -p 8 -f 6 qseqid sseqid qframe qlen stitle salltitles evalue qtitle -o results/uniprot_sprot.blast.tsv
+
+## B. TrEMBL
+diamond blastx --tmpdir /dev/shm -q results/novel_sites_allhits.stringtie.fa -d ./NCBInrdatabase/uniprot_trembl.dmnd -b 12 -c 1 -p 8 -f 6 qseqid sseqid qframe qlen stitle salltitles evalue qtitle -o results/uniprot_trembl.blast.tsv
+
+## C. NR database
+diamond blastx --tmpdir /dev/shm -q results/novel_sites_allhits.stringtie.fa -d ./NCBInrdatabase/nr.dmnd -c 1 -p 8 -f 6 qseqid sseqid qframe qlen stitle salltitles evalue qtitle -o results/allhits.blast.tsv
+
+# all diamond blast output tables can be sorted in R or continue to add annotation back to stringtie process, in this case we only used those additional annotation to check for some genes and did not do additional process with them
+
+### Step 2 Get additional GO terms and Protein domains
+
+## A. GO terms and Protein domains with Interproscan
+
+wget ftp://ftp.ebi.ac.uk/pub/software/unix/iprscan/5/5.51-85.0/interproscan-5.51-85.0-64-bit.tar.gz
+wget ftp://ftp.ebi.ac.uk/pub/software/unix/iprscan/5/5.51-85.0/interproscan-5.51-85.0-64-bit.tar.gz.md5
+
+# Recommended checksum to confirm the download was successful:
+md5sum -c interproscan-5.51-85.0-64-bit.tar.gz.md5
+# Must return *interproscan-5.51-85.0-64-bit.tar.gz: OK*
+# If not - try downloading the file again as it may be a corrupted copy.
+#extract the tar ball
+tar -pxvzf interproscan-5.51-85.0-*-bit.tar.gz
+
+# where:
+#     p = preserve the file permissions
+#     x = extract files from an archive
+#     v = verbosely list the files processed
+#     z = filter the archive through gzip
+#     f = use archive file
+
+#Before you run interproscan for the first time, you should run the command:
+#This command will press and index the hmm models to prepare them into a format used by hmmscan. This command need only be run once.
+cd interproscan-5.51-85.0
+python3 initial_setup.py
+
+#run the following two test case commands:
+./interproscan.sh -i test_all_appl.fasta -f tsv -dp
+./interproscan.sh -i test_all_appl.fasta -f tsv
+./interproscan.sh -i results/novel_sites_allhits.stringtie.fa -goterms -f tsv -b interproscan/iproscan -pa -t n -T interproscan -dra
+
+#to improve performance of interproscan, translate nucleotides into protein, using EMBOSS
+#To translate a sequence in all six forward and reverse frames:
+transeq -sequence novel_sites_allhits.stringtie.fa -outseq novel_sites_allhits_protein.fa -frame=6 -clean
+#chunk the big protein file into small pieces
+awk 'BEGIN {n_seq=0;} /^>/ {if(n_seq%100000==0){file=sprintf("myseq%d.fa",n_seq);} print >> file; n_seq++; next;} { print >> file; }' < results/novel_sites_allhits_protein.fa
+
+#run interproscan with superfamily and pfam for each myseq files
+./interproscan.sh -appl Pfam, SUPERFAMILY -i myseq0.fa -goterms -f tsv -o interproscan/myseq0.tsv -pa -T interproscan -dra
+
+#interproscan tsv files can then be further combined together and edited in R
+
+## B. Get GO terms with Pannzer2 web service and download results to edit it in R
+
+## C. Get GO terms and KEGG mapping to edit it in R
+wget https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/idmapping/idmapping_selected.tab.gz
+gunzip idmapping_selected.tab.gz
