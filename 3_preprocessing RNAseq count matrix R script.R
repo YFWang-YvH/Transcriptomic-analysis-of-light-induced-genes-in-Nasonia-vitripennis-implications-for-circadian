@@ -218,4 +218,4 @@ head(resTC[order(resTC$padj),], 4)
 sum(resTC$padj < 0.05, na.rm=TRUE)
 
 # we compared different models and decided to use the original model of dds that fits our question better
-sessioninfo()
+sessionInfo()
