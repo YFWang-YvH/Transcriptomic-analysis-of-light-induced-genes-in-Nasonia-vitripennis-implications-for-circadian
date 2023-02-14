@@ -1,0 +1,63 @@
+### Motif analysis for RNAseq data
+
+## using Seqkit tool
+
+#install seqkit
+tar -zxvf *.tar.gz
+mkdir -p $HOME/bin/; cp seqkit $HOME/bin/
+
+seqkit stat nasonia_genome.fa
+
+zcat GCF_009193385.2_Nvit_psr_1.1_genomic.fna.gz > GCF_009193385.2_Nvit_psr_1.1_genomic.fa
+zcat GCF_009193385.2_Nvit_psr_1.1_genomic.gff.gz > GCF_009193385.2_Nvit_psr_1.1_genomic.gff
+
+#get orfs with flanks 
+seqkit subseq --up-stream 1000 --gtf nasonia_genome.gtf nasonia_genome.fa > all-orfs-with-flanks.fa
+
+#get 500bp upstream sequence of CDS, NOT INCLUDING CDS
+seqkit subseq --gtf nasonia_genome.gtf nasonia_genome.fa -u 500 -f > nasonia_upstream500.fa
+
+seqkit stat nasonia_upstream500.ffn
+
+#remove duplicated sequences #-s flag remove by sequence
+cat nasonia_upstream500.fa \
+    | seqkit rmdup -s -i -o 500clean.fa -d duplicated.fa -D duplicated.detail.txt
+seqkit stat 500clean.fa
+
+#remove duplciated sequences by name
+seqkit rmdup -n 500clean.fa > 500clean1.fa #0duplicated record, so all unique names
+
+#get all sequence IDs
+seqkit seq 500clean.fa -n > flank500_allid.txt
+
+#separate IDs in R based on DEGs and clusters
+#searching with list of sequence IDs
+
+cat 500clean.fa |seqkit grep -n -f DEGt0.5_500.txt > DEGt0.5_500.fa
+cat 500clean.fa |seqkit grep -n -f DEG1_500.txt > DEG1_500.fa
+cat 500clean.fa |seqkit grep -n -f DEG2_500.txt > DEG2_500.fa
+cat 500clean.fa |seqkit grep -n -f DEG4_500.txt > DEG4_500.fa
+# we also separated the sequence based on each time course clusters
+
+#get rid of sequence less than 8bp
+seqkit seq -m 8 DEGt0.5_500.fa> DEGt0.5_500-8bpup.fa
+fasta-unique-names -r RNAseqid-DEGt0.5_500-8bpup.fa
+
+#find motifs with homer
+
+findMotifs.pl DEGt0.5_500.fa fasta DEG-time0.5_500 -fasta gene.fna -len 6,8,10,12 -p 4
+
+#we also performed motif analysis for the other subsets of DEGs
+
+#for two core clock genes, we performed additional motif analysis with longer upstream sequence
+
+#get 2000upstream of cry2 and npas2 to check for motifs
+seqkit subseq --up-stream 2000 -f --gtf nasonia_genome.gtf nasonia_genome.fa > nasonia_upstream2k.fa
+
+grep -w "LOC100122802" nasonia_upstream2k.fa > LOC100122802.txt
+grep -w "LOC100123168" nasonia_upstream2k.fa > LOC100123168.txt
+
+cat nasonia_upstream2k.fa |seqkit grep -n -f LOC100122802.txt > LOC100122802.fa
+cat nasonia_upstream2k.fa |seqkit grep -n -f LOC100123168.txt > LOC100123168.fa
+
+#we checked the upstream region of these two core clock genes manually
