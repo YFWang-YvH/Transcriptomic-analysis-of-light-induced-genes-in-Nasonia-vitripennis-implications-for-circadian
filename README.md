@@ -1,6 +1,6 @@
 # Transcriptomic-analysis-of-light-induced-genes-in-Nasonia-vitripennis-implications-for-circadian
 
-This folder contains all the scripts needed to reproduce the analysis of RNAseq data from Nasonia vitripennis, published in (journal) - Transcriptomic analysis of light-induced genes in Nasonia vitripennis: implications for circadian light entrainment pathways.
+This folder contains all the scripts needed to reproduce the analysis of RNAseq data from Nasonia vitripennis, published in the special issue Biological Rhythms and Molecular Clockworks in Physiology and Pathology in Biology - Transcriptomic analysis of light-induced genes in Nasonia vitripennis: implications for circadian light entrainment pathways.
 
 All used packages and software are reported in the manuscript.
 
